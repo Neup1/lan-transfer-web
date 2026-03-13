@@ -30,6 +30,9 @@ python lan_transfer.py
 ### 第二步：在任意客户端电脑打开浏览器
 访问上面的地址，输入口令登录即可传文件。
 
+## 界面示例
+![LAN Transfer 界面示例](assets/example.png)
+
 ## 页面使用说明
 
 ### 上传文件
@@ -69,4 +72,3 @@ python lan_transfer.py serve --root "D:\LAN_SHARE"
 ```powershell
 python lan_transfer.py serve --port 9000
 ```
-

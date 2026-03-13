@@ -8,14 +8,18 @@ import hashlib
 import hmac
 import http.client
 import json
+import mimetypes
 import os
 import secrets
 import socket
+import string
+import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from lan_transfer_frontend import WEB_UI_HTML
 from pathlib import Path
 from typing import Dict, Optional
 from urllib.parse import parse_qs, quote, urlsplit
@@ -24,792 +28,10 @@ from urllib.parse import parse_qs, quote, urlsplit
 IO_CHUNK = 4 * 1024 * 1024
 DEFAULT_PORT = 9000
 DEFAULT_TIMEOUT = 30.0
-DEFAULT_TOKEN_TTL = 24 * 3600
+DEFAULT_TOKEN_TTL = 2 * 3600
 DEFAULT_CHALLENGE_TTL = 60
 JSON_LIMIT = 1024 * 1024
-
-WEB_UI_HTML = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LAN Transfer</title>
-  <style>
-    :root {
-      --bg: #f3f6fb;
-      --surface: #ffffff;
-      --surface-soft: #f8fafe;
-      --border: #dbe5f1;
-      --text: #243245;
-      --muted: #607188;
-      --accent: #2f6fdf;
-      --accent-soft: #eaf2ff;
-      --danger: #c73a50;
-      --danger-soft: #ffecef;
-      --radius-lg: 18px;
-      --radius-md: 12px;
-      --radius-sm: 10px;
-      --shadow: 0 20px 44px rgba(30, 52, 85, 0.10);
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      color: var(--text);
-      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      background:
-        radial-gradient(circle at 14% 10%, #e8f0ff 0%, rgba(232, 240, 255, 0) 40%),
-        radial-gradient(circle at 88% 88%, #edf9f4 0%, rgba(237, 249, 244, 0) 32%),
-        var(--bg);
-      display: flex;
-      justify-content: center;
-      padding: 28px 18px;
-    }
-    .shell {
-      width: min(1100px, 100%);
-      display: grid;
-      gap: 18px;
-      grid-template-columns: 320px 1fr;
-    }
-    .card {
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      background: var(--surface);
-      box-shadow: var(--shadow);
-    }
-    .side {
-      padding: 20px;
-      display: grid;
-      gap: 16px;
-      align-content: start;
-      position: sticky;
-      top: 14px;
-      height: fit-content;
-    }
-    .headline {
-      display: grid;
-      gap: 8px;
-    }
-    .headline h1 {
-      margin: 0;
-      font-size: 24px;
-      line-height: 1.2;
-      font-weight: 700;
-      letter-spacing: 0.2px;
-    }
-    .headline p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.5;
-    }
-    .field {
-      display: grid;
-      gap: 8px;
-    }
-    .field label {
-      font-size: 13px;
-      color: var(--muted);
-      font-weight: 600;
-    }
-    input[type="password"],
-    input[type="text"] {
-      width: 100%;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      padding: 10px 12px;
-      outline: none;
-      font-size: 14px;
-      color: var(--text);
-      background: #fff;
-      transition: border-color 0.2s ease, box-shadow 0.2s ease;
-    }
-    input[type="password"]:focus,
-    input[type="text"]:focus {
-      border-color: #87aaf6;
-      box-shadow: 0 0 0 4px #edf3ff;
-    }
-    button {
-      border: 1px solid transparent;
-      border-radius: var(--radius-md);
-      background: var(--accent);
-      color: #fff;
-      font-weight: 600;
-      font-size: 14px;
-      padding: 10px 14px;
-      cursor: pointer;
-      transition: transform 0.08s ease, box-shadow 0.2s ease, opacity 0.2s ease;
-      box-shadow: 0 10px 18px rgba(47, 111, 223, 0.25);
-    }
-    button:hover { transform: translateY(-1px); }
-    button:active { transform: translateY(0); }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    button.ghost {
-      color: var(--text);
-      background: #fff;
-      border-color: var(--border);
-      box-shadow: none;
-    }
-    button.soft {
-      color: var(--accent);
-      background: var(--accent-soft);
-      border-color: #d3e4ff;
-      box-shadow: none;
-    }
-    .status {
-      min-height: 52px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      background: var(--surface-soft);
-      padding: 10px 12px;
-      font-size: 13px;
-      line-height: 1.5;
-      color: var(--muted);
-      word-break: break-word;
-    }
-    .status.error {
-      border-color: #f1b9c3;
-      background: var(--danger-soft);
-      color: var(--danger);
-    }
-    .status.ok {
-      border-color: #bde6ce;
-      background: #eefbf3;
-      color: #21784b;
-    }
-    .main {
-      padding: 20px;
-      display: grid;
-      gap: 14px;
-      align-content: start;
-      min-height: 600px;
-    }
-    .toolbar {
-      display: grid;
-      gap: 10px;
-      grid-template-columns: 1fr auto auto;
-      align-items: center;
-    }
-    .path-chip {
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      background: #fff;
-      padding: 10px 12px;
-      overflow-x: auto;
-      white-space: nowrap;
-      font-size: 13px;
-    }
-    .crumb {
-      border: none;
-      background: transparent;
-      color: var(--accent);
-      padding: 0;
-      margin: 0;
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 600;
-      box-shadow: none;
-    }
-    .crumb + .crumb::before {
-      content: "/";
-      color: #8ca0bb;
-      margin: 0 7px 0 6px;
-      font-weight: 400;
-    }
-    .action-grid {
-      display: grid;
-      gap: 10px;
-      grid-template-columns: 1fr auto;
-    }
-    .upload-row {
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      background: #fff;
-      padding: 10px 12px;
-      display: grid;
-      gap: 10px;
-      grid-template-columns: 1fr auto;
-      align-items: center;
-    }
-    .upload-row input[type="file"] {
-      width: 100%;
-      font-size: 13px;
-      color: var(--muted);
-    }
-    .upload-option {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--muted);
-      font-size: 12px;
-      margin-top: 4px;
-    }
-    .upload-option input {
-      accent-color: var(--accent);
-    }
-    .table-wrap {
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      background: #fff;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    th, td {
-      padding: 12px 10px;
-      border-bottom: 1px solid #ecf1f7;
-      font-size: 13px;
-      text-align: left;
-      vertical-align: middle;
-    }
-    th {
-      color: #4f637d;
-      background: #f8fbff;
-      font-weight: 700;
-    }
-    tr:last-child td { border-bottom: none; }
-    .name-cell {
-      max-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .type-pill {
-      display: inline-block;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 3px 9px;
-      border: 1px solid var(--border);
-      color: var(--muted);
-      background: #fff;
-    }
-    .type-pill.dir {
-      background: #edf6ff;
-      border-color: #cfe4ff;
-      color: #2b67bf;
-    }
-    .actions {
-      display: flex;
-      gap: 6px;
-      justify-content: flex-end;
-    }
-    .empty {
-      padding: 34px 20px;
-      text-align: center;
-      color: var(--muted);
-      font-size: 14px;
-    }
-    .inline {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .tiny {
-      font-size: 12px;
-      color: var(--muted);
-    }
-    @media (max-width: 960px) {
-      .shell { grid-template-columns: 1fr; }
-      .side { position: static; }
-      .toolbar { grid-template-columns: 1fr; }
-      .action-grid { grid-template-columns: 1fr; }
-      .upload-row { grid-template-columns: 1fr; }
-      th:nth-child(3),
-      td:nth-child(3),
-      th:nth-child(4),
-      td:nth-child(4) { display: none; }
-    }
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <aside class="card side">
-      <div class="headline">
-        <h1>LAN Transfer</h1>
-        <p>Fast local network file transfer with password authentication.</p>
-      </div>
-      <div class="field">
-        <label for="passwordInput">Password</label>
-        <input id="passwordInput" type="password" placeholder="Enter server password">
-      </div>
-      <div class="inline">
-        <button id="loginBtn">Sign In</button>
-        <button id="logoutBtn" class="ghost">Sign Out</button>
-      </div>
-      <div id="status" class="status">Not signed in.</div>
-      <div class="tiny">Tip: This page works best when opened from the same host running the server.</div>
-    </aside>
-    <main class="card main">
-      <div class="toolbar">
-        <div id="breadcrumbs" class="path-chip"></div>
-        <button id="refreshBtn" class="soft">Refresh</button>
-        <button id="upBtn" class="ghost">Up</button>
-      </div>
-
-      <div class="action-grid">
-        <div>
-          <div class="upload-row">
-            <input id="uploadInput" type="file" multiple>
-            <button id="uploadBtn">Upload</button>
-          </div>
-          <label class="upload-option">
-            <input id="resumeCheckbox" type="checkbox" checked>
-            Resume if same file already exists
-          </label>
-        </div>
-        <div class="upload-row">
-          <input id="mkdirInput" type="text" placeholder="New folder name">
-          <button id="mkdirBtn" class="soft">Create Folder</button>
-        </div>
-      </div>
-
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 44%;">Name</th>
-              <th style="width: 11%;">Type</th>
-              <th style="width: 15%;">Size</th>
-              <th style="width: 18%;">Modified</th>
-              <th style="width: 12%; text-align: right;">Actions</th>
-            </tr>
-          </thead>
-          <tbody id="fileBody">
-            <tr>
-              <td colspan="5" class="empty">Sign in to load files.</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </main>
-  </div>
-
-  <script>
-    const tokenKey = "lan_transfer_token";
-    const state = {
-      token: sessionStorage.getItem(tokenKey) || "",
-      path: "",
-      entries: []
-    };
-
-    const $ = (sel) => document.querySelector(sel);
-    const statusEl = $("#status");
-    const passwordInput = $("#passwordInput");
-    const loginBtn = $("#loginBtn");
-    const logoutBtn = $("#logoutBtn");
-    const refreshBtn = $("#refreshBtn");
-    const upBtn = $("#upBtn");
-    const uploadInput = $("#uploadInput");
-    const uploadBtn = $("#uploadBtn");
-    const mkdirInput = $("#mkdirInput");
-    const mkdirBtn = $("#mkdirBtn");
-    const resumeCheckbox = $("#resumeCheckbox");
-    const breadcrumbs = $("#breadcrumbs");
-    const fileBody = $("#fileBody");
-
-    function setStatus(text, kind = "") {
-      statusEl.textContent = text;
-      statusEl.className = "status" + (kind ? " " + kind : "");
-    }
-
-    function setToken(token) {
-      state.token = token || "";
-      if (state.token) {
-        sessionStorage.setItem(tokenKey, state.token);
-      } else {
-        sessionStorage.removeItem(tokenKey);
-      }
-    }
-
-    function formatBytes(size) {
-      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-      let value = Number(size || 0);
-      let idx = 0;
-      while (value >= 1024 && idx < units.length - 1) {
-        value /= 1024;
-        idx += 1;
-      }
-      if (idx === 0) {
-        return String(Math.round(value)) + " " + units[idx];
-      }
-      return value.toFixed(2) + " " + units[idx];
-    }
-
-    function formatTime(epoch) {
-      if (!epoch) return "-";
-      const d = new Date(Number(epoch) * 1000);
-      return d.toLocaleString();
-    }
-
-    function joinPath(base, name) {
-      const b = (base || "").replace(/^\/+|\/+$/g, "");
-      const n = (name || "").replace(/^\/+|\/+$/g, "");
-      if (!b) return n;
-      if (!n) return b;
-      return b + "/" + n;
-    }
-
-    function parentPath(path) {
-      const clean = (path || "").replace(/^\/+|\/+$/g, "");
-      if (!clean) return "";
-      const parts = clean.split("/");
-      parts.pop();
-      return parts.join("/");
-    }
-
-    function clearTable(message) {
-      fileBody.innerHTML = "";
-      const row = document.createElement("tr");
-      const cell = document.createElement("td");
-      cell.colSpan = 5;
-      cell.className = "empty";
-      cell.textContent = message;
-      row.appendChild(cell);
-      fileBody.appendChild(row);
-    }
-
-    function renderBreadcrumbs() {
-      breadcrumbs.innerHTML = "";
-      const rootBtn = document.createElement("button");
-      rootBtn.className = "crumb";
-      rootBtn.textContent = "root";
-      rootBtn.addEventListener("click", () => loadDir(""));
-      breadcrumbs.appendChild(rootBtn);
-
-      const clean = (state.path || "").replace(/^\/+|\/+$/g, "");
-      if (!clean) return;
-
-      const parts = clean.split("/");
-      let cursor = "";
-      for (const part of parts) {
-        cursor = joinPath(cursor, part);
-        const btn = document.createElement("button");
-        btn.className = "crumb";
-        btn.textContent = part;
-        btn.addEventListener("click", () => loadDir(cursor));
-        breadcrumbs.appendChild(btn);
-      }
-    }
-
-    async function requestJson(path, options = {}) {
-      const headers = new Headers(options.headers || {});
-      headers.set("Accept", "application/json");
-      if (state.token) {
-        headers.set("Authorization", "Bearer " + state.token);
-      }
-      const response = await fetch(path, {
-        ...options,
-        headers
-      });
-      if (response.status === 401) {
-        setToken("");
-        throw new Error("Authentication expired. Please sign in again.");
-      }
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || ("HTTP " + response.status));
-      }
-      return data;
-    }
-
-    async function hmacHex(secret, message) {
-      if (!window.crypto || !window.crypto.subtle) {
-        throw new Error("Browser does not support crypto.subtle.");
-      }
-      const encoder = new TextEncoder();
-      const key = await window.crypto.subtle.importKey(
-        "raw",
-        encoder.encode(secret),
-        { name: "HMAC", hash: "SHA-256" },
-        false,
-        ["sign"]
-      );
-      const signature = await window.crypto.subtle.sign("HMAC", key, encoder.encode(message));
-      return Array.from(new Uint8Array(signature))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-    }
-
-    async function signIn() {
-      const password = passwordInput.value;
-      if (!password) {
-        setStatus("Please enter password first.", "error");
-        return;
-      }
-      loginBtn.disabled = true;
-      try {
-        setStatus("Requesting challenge...");
-        const challenge = await requestJson("/api/challenge");
-        const proof = await hmacHex(password, challenge.nonce);
-        const login = await requestJson("/api/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ nonce: challenge.nonce, proof })
-        });
-        setToken(login.token || "");
-        passwordInput.value = "";
-        setStatus("Signed in. Loading files...", "ok");
-        await loadDir(state.path || "");
-      } catch (err) {
-        setStatus(String(err.message || err), "error");
-      } finally {
-        loginBtn.disabled = false;
-      }
-    }
-
-    function signOut() {
-      setToken("");
-      clearTable("Sign in to load files.");
-      setStatus("Signed out.");
-    }
-
-    async function loadDir(path) {
-      if (!state.token) {
-        clearTable("Sign in to load files.");
-        renderBreadcrumbs();
-        return;
-      }
-      const query = encodeURIComponent(path || "");
-      const result = await requestJson("/api/list?path=" + query);
-      state.path = result.base || "";
-      state.entries = Array.isArray(result.entries) ? result.entries : [];
-      renderBreadcrumbs();
-      renderFiles();
-    }
-
-    function renderFiles() {
-      if (!state.entries.length) {
-        clearTable("This folder is empty.");
-        return;
-      }
-      fileBody.innerHTML = "";
-      for (const item of state.entries) {
-        const row = document.createElement("tr");
-
-        const nameCell = document.createElement("td");
-        nameCell.className = "name-cell";
-        nameCell.textContent = item.name || "";
-        row.appendChild(nameCell);
-
-        const typeCell = document.createElement("td");
-        const typePill = document.createElement("span");
-        typePill.className = "type-pill " + (item.type === "dir" ? "dir" : "");
-        typePill.textContent = item.type === "dir" ? "Folder" : "File";
-        typeCell.appendChild(typePill);
-        row.appendChild(typeCell);
-
-        const sizeCell = document.createElement("td");
-        sizeCell.textContent = item.type === "dir" ? "-" : formatBytes(item.size);
-        row.appendChild(sizeCell);
-
-        const timeCell = document.createElement("td");
-        timeCell.textContent = formatTime(item.mtime);
-        row.appendChild(timeCell);
-
-        const actionCell = document.createElement("td");
-        actionCell.className = "actions";
-        if (item.type === "dir") {
-          const openBtn = document.createElement("button");
-          openBtn.className = "soft";
-          openBtn.textContent = "Open";
-          openBtn.addEventListener("click", () => {
-            loadDir(item.path || "");
-          });
-          actionCell.appendChild(openBtn);
-        } else {
-          const downloadBtn = document.createElement("button");
-          downloadBtn.className = "ghost";
-          downloadBtn.textContent = "Download";
-          downloadBtn.addEventListener("click", () => triggerDownload(item.path || "", item.name || "download"));
-          actionCell.appendChild(downloadBtn);
-        }
-        row.appendChild(actionCell);
-
-        fileBody.appendChild(row);
-      }
-    }
-
-    function triggerDownload(remotePath, fileName) {
-      if (!state.token) {
-        setStatus("Please sign in first.", "error");
-        return;
-      }
-      const url = "/api/download?path=" + encodeURIComponent(remotePath) + "&token=" + encodeURIComponent(state.token);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = fileName || "";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setStatus("Download started: " + remotePath, "ok");
-    }
-
-    async function queryRemoteOffset(remotePath, fileSize, allowResume) {
-      const stat = await requestJson("/api/stat?path=" + encodeURIComponent(remotePath));
-      if (!stat.exists) return 0;
-      if (stat.is_dir) throw new Error("Remote target is a folder: " + remotePath);
-      const remoteSize = Number(stat.size || 0);
-      if (!allowResume) return 0;
-      if (remoteSize === fileSize) return fileSize;
-      if (remoteSize > 0 && remoteSize < fileSize) return remoteSize;
-      return 0;
-    }
-
-    function uploadChunk(file, remotePath, offset, onProgress) {
-      return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/api/upload?path=" + encodeURIComponent(remotePath), true);
-        xhr.setRequestHeader("Authorization", "Bearer " + state.token);
-        xhr.setRequestHeader("X-Offset", String(offset));
-        xhr.setRequestHeader("Content-Type", "application/octet-stream");
-
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            onProgress(offset + event.loaded, file.size);
-          }
-        };
-
-        xhr.onerror = () => reject(new Error("Network error during upload."));
-        xhr.onload = () => {
-          if (xhr.status === 401) {
-            setToken("");
-            reject(new Error("Authentication expired. Please sign in again."));
-            return;
-          }
-          if (xhr.status < 200 || xhr.status >= 300) {
-            let msg = "Upload failed with HTTP " + xhr.status;
-            try {
-              const payload = JSON.parse(xhr.responseText || "{}");
-              if (payload.error) msg = payload.error;
-            } catch (ignore) {
-            }
-            reject(new Error(msg));
-            return;
-          }
-          onProgress(file.size, file.size);
-          resolve();
-        };
-
-        const payload = offset > 0 ? file.slice(offset) : file;
-        xhr.send(payload);
-      });
-    }
-
-    async function uploadSelectedFiles() {
-      const files = Array.from(uploadInput.files || []);
-      if (!files.length) {
-        setStatus("Choose files first.", "error");
-        return;
-      }
-      if (!state.token) {
-        setStatus("Please sign in first.", "error");
-        return;
-      }
-      uploadBtn.disabled = true;
-      let done = 0;
-      try {
-        for (const file of files) {
-          const remotePath = joinPath(state.path, file.name);
-          const allowResume = Boolean(resumeCheckbox.checked);
-          const offset = await queryRemoteOffset(remotePath, file.size, allowResume);
-          if (offset === file.size) {
-            done += 1;
-            setStatus("Skipped existing file: " + file.name + " (" + done + "/" + files.length + ")", "ok");
-            continue;
-          }
-          await uploadChunk(file, remotePath, offset, (current, total) => {
-            const pct = total > 0 ? ((current * 100) / total).toFixed(2) : "100.00";
-            setStatus("Uploading " + file.name + " " + pct + "% (" + done + "/" + files.length + ")");
-          });
-          done += 1;
-          setStatus("Uploaded: " + file.name + " (" + done + "/" + files.length + ")", "ok");
-        }
-        uploadInput.value = "";
-        await loadDir(state.path);
-      } catch (err) {
-        setStatus(String(err.message || err), "error");
-      } finally {
-        uploadBtn.disabled = false;
-      }
-    }
-
-    async function createFolder() {
-      const name = (mkdirInput.value || "").trim();
-      if (!name) {
-        setStatus("Please enter folder name.", "error");
-        return;
-      }
-      if (!state.token) {
-        setStatus("Please sign in first.", "error");
-        return;
-      }
-      try {
-        const remotePath = joinPath(state.path, name);
-        await requestJson("/api/mkdir?path=" + encodeURIComponent(remotePath), { method: "POST" });
-        mkdirInput.value = "";
-        setStatus("Folder created: " + name, "ok");
-        await loadDir(state.path);
-      } catch (err) {
-        setStatus(String(err.message || err), "error");
-      }
-    }
-
-    loginBtn.addEventListener("click", signIn);
-    logoutBtn.addEventListener("click", signOut);
-    refreshBtn.addEventListener("click", async () => {
-      try {
-        await loadDir(state.path);
-        setStatus("Refreshed.", "ok");
-      } catch (err) {
-        setStatus(String(err.message || err), "error");
-      }
-    });
-    upBtn.addEventListener("click", async () => {
-      try {
-        await loadDir(parentPath(state.path));
-      } catch (err) {
-        setStatus(String(err.message || err), "error");
-      }
-    });
-    uploadBtn.addEventListener("click", uploadSelectedFiles);
-    mkdirBtn.addEventListener("click", createFolder);
-    mkdirInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        createFolder();
-      }
-    });
-    passwordInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        signIn();
-      }
-    });
-
-    (async () => {
-      renderBreadcrumbs();
-      if (!state.token) {
-        clearTable("Sign in to load files.");
-        return;
-      }
-      try {
-        setStatus("Restoring session...");
-        await loadDir("");
-        setStatus("Signed in. Ready.", "ok");
-      } catch (err) {
-        setToken("");
-        clearTable("Sign in to load files.");
-        setStatus(String(err.message || err), "error");
-      }
-    })();
-  </script>
-</body>
-</html>
-"""
-
+ASSET_ROOT = Path(__file__).resolve().parent / "assets"
 
 def b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
@@ -822,6 +44,132 @@ def b64url_decode(text: str) -> bytes:
 
 def now_ts() -> int:
     return int(time.time())
+
+
+def detect_lan_ip() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            ip = sock.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return ip
+    except OSError:
+        pass
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        pass
+    return "127.0.0.1"
+
+
+def detect_local_ips() -> set[str]:
+    ips: set[str] = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+    try:
+        for family, _, _, _, sockaddr in socket.getaddrinfo(socket.gethostname(), None):
+            if family in (socket.AF_INET, socket.AF_INET6):
+                ip = sockaddr[0]
+                if ip:
+                    ips.add(ip.split("%")[0])
+    except OSError:
+        pass
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if ip:
+                ips.add(ip)
+    except OSError:
+        pass
+    ips.add(detect_lan_ip())
+    return ips
+
+
+def find_listening_pids(port: int) -> list[int]:
+    if os.name != "nt":
+        return []
+    try:
+        proc = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if proc.returncode != 0:
+        return []
+    pids: set[int] = set()
+    suffix = f":{port}"
+    for raw in proc.stdout.splitlines():
+        line = raw.strip()
+        if not line or "LISTENING" not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        local_addr = parts[1]
+        state = parts[3]
+        pid_str = parts[4]
+        if state != "LISTENING":
+            continue
+        if not local_addr.endswith(suffix):
+            continue
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            continue
+        if pid != os.getpid():
+            pids.add(pid)
+    return sorted(pids)
+
+
+def kill_processes(pids: list[int]) -> list[int]:
+    if os.name != "nt":
+        return []
+    killed: list[int] = []
+    for pid in pids:
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            killed.append(pid)
+    return killed
+
+
+def pick_directory_dialog(initial_dir: Path) -> Optional[Path]:
+    """Open a native folder picker on server machine and return selected directory."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:  # pragma: no cover - depends on runtime GUI availability
+        raise RuntimeError(f"Folder picker is unavailable: {exc}") from exc
+
+    root: Optional["tk.Tk"] = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(
+            parent=root,
+            initialdir=str(initial_dir),
+            mustexist=False,
+            title="Select upload root directory",
+        )
+    except Exception as exc:  # pragma: no cover - depends on runtime GUI availability
+        raise RuntimeError(f"Unable to open folder picker: {exc}") from exc
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+    if not selected:
+        return None
+    return Path(selected).expanduser().resolve()
 
 
 def format_bytes(num_bytes: float) -> str:
@@ -862,13 +210,26 @@ def resolve_safe_path(root: Path, remote_path: str, *, allow_root: bool) -> Path
 
 @dataclass
 class ServerState:
+    # 服务端运行时认证状态（供所有请求处理器共享）。
     shared_root: Path
     password_key: bytes
+    passphrase: str
     token_ttl: int = DEFAULT_TOKEN_TTL
     challenge_ttl: int = DEFAULT_CHALLENGE_TTL
     token_secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
+    local_ips: set[str] = field(default_factory=detect_local_ips)
     challenges: Dict[str, float] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def get_shared_root(self) -> Path:
+        with self.lock:
+            return self.shared_root
+
+    def set_shared_root(self, new_root: Path) -> Path:
+        with self.lock:
+            previous = self.shared_root
+            self.shared_root = new_root
+        return previous
 
     def _cleanup_challenges_locked(self) -> None:
         current = time.time()
@@ -897,11 +258,17 @@ class ServerState:
         ).hexdigest()
         return hmac.compare_digest(expected, proof)
 
+    def verify_password(self, password: str) -> bool:
+        if not isinstance(password, str):
+            return False
+        return hmac.compare_digest(self.password_key, password.encode("utf-8"))
+
     def issue_token(self) -> str:
         payload = {
             "v": 1,
             "iat": now_ts(),
             "exp": now_ts() + self.token_ttl,
+            "rnd": secrets.token_hex(4),
         }
         payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
             "utf-8"
@@ -928,6 +295,7 @@ class ServerState:
 
 
 def make_handler(state: ServerState):
+    # 提供 HTTP API 与 Web 页面入口。
     class TransferHandler(BaseHTTPRequestHandler):
         server_version = "LANTransfer/1.0"
         protocol_version = "HTTP/1.1"
@@ -955,6 +323,15 @@ def make_handler(state: ServerState):
 
         def _send_error(self, status: int, message: str) -> None:
             self._send_json(status, {"error": message})
+
+        def _send_bytes(self, status: int, payload: bytes, content_type: str) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(payload)
 
         def _read_json(self) -> Optional[dict]:
             content_length = self.headers.get("Content-Length")
@@ -1011,6 +388,17 @@ def make_handler(state: ServerState):
                 return False
             return True
 
+        def _is_local_viewer(self) -> bool:
+            client_ip = self.client_address[0].split("%")[0]
+            if client_ip in state.local_ips:
+                return True
+            if client_ip.startswith("127."):
+                return True
+            if client_ip.startswith("::ffff:"):
+                mapped = client_ip.split("::ffff:")[-1]
+                return mapped in state.local_ips
+            return False
+
         def _handle_challenge(self) -> None:
             nonce, ttl = state.issue_challenge()
             self._send_json(200, {"nonce": nonce, "expires_in": ttl})
@@ -1019,10 +407,18 @@ def make_handler(state: ServerState):
             body = self._read_json()
             if body is None:
                 return
+            password = body.get("password")
+            if isinstance(password, str):
+                if not state.verify_password(password):
+                    self._send_error(403, "Authentication failed")
+                    return
+                token = state.issue_token()
+                self._send_json(200, {"token": token, "expires_in": state.token_ttl})
+                return
             nonce = body.get("nonce")
             proof = body.get("proof")
             if not isinstance(nonce, str) or not isinstance(proof, str):
-                self._send_error(400, "nonce and proof must be strings")
+                self._send_error(400, "password or (nonce + proof) is required")
                 return
             if not state.verify_proof(nonce, proof):
                 self._send_error(403, "Authentication failed")
@@ -1030,10 +426,116 @@ def make_handler(state: ServerState):
             token = state.issue_token()
             self._send_json(200, {"token": token, "expires_in": state.token_ttl})
 
+        def _handle_refresh(self) -> None:
+            token = state.issue_token()
+            self._send_json(200, {"token": token, "expires_in": state.token_ttl})
+
+        def _handle_server_passphrase(self) -> None:
+            if not self._is_local_viewer():
+                self._send_error(403, "Server passphrase is only visible on server machine")
+                return
+            self._send_json(
+                200,
+                {
+                    "passphrase": state.passphrase,
+                    "updated_at": now_ts(),
+                },
+            )
+
+        def _handle_server_root(self) -> None:
+            if not self._is_local_viewer():
+                self._send_error(403, "Server root is only visible on server machine")
+                return
+            shared_root = state.get_shared_root()
+            self._send_json(
+                200,
+                {
+                    "root": str(shared_root),
+                    "updated_at": now_ts(),
+                },
+            )
+
+        def _handle_set_server_root(self) -> None:
+            if not self._is_local_viewer():
+                self._send_error(403, "Server root can only be changed on server machine")
+                return
+            body = self._read_json()
+            if body is None:
+                return
+            new_root_raw = body.get("root")
+            if not isinstance(new_root_raw, str) or not new_root_raw.strip():
+                self._send_error(400, "root is required")
+                return
+            try:
+                new_root = Path(new_root_raw).expanduser().resolve()
+            except OSError as exc:
+                self._send_error(400, f"Invalid root path: {exc}")
+                return
+            try:
+                new_root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._send_error(400, f"Cannot create root directory: {exc}")
+                return
+            if not new_root.is_dir():
+                self._send_error(400, "root path is not a directory")
+                return
+            previous_root = state.set_shared_root(new_root)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "root": str(new_root),
+                    "previous_root": str(previous_root),
+                    "updated_at": now_ts(),
+                },
+            )
+
+        def _handle_pick_server_root(self) -> None:
+            if not self._is_local_viewer():
+                self._send_error(403, "Server root can only be changed on server machine")
+                return
+            current_root = state.get_shared_root()
+            try:
+                picked_root = pick_directory_dialog(current_root)
+            except RuntimeError as exc:
+                self._send_error(500, str(exc))
+                return
+            if picked_root is None:
+                self._send_json(
+                    200,
+                    {
+                        "ok": False,
+                        "cancelled": True,
+                        "root": str(current_root),
+                        "updated_at": now_ts(),
+                    },
+                )
+                return
+            try:
+                picked_root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._send_error(400, f"Cannot create root directory: {exc}")
+                return
+            if not picked_root.is_dir():
+                self._send_error(400, "Selected path is not a directory")
+                return
+            previous_root = state.set_shared_root(picked_root)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "cancelled": False,
+                    "root": str(picked_root),
+                    "previous_root": str(previous_root),
+                    "updated_at": now_ts(),
+                },
+            )
+
         def _handle_list(self, query: dict[str, list[str]]) -> None:
+            shared_root = state.get_shared_root()
             try:
                 raw_path = self._query_value(query, "path", default="") or ""
-                target = resolve_safe_path(state.shared_root, raw_path, allow_root=True)
+                target = resolve_safe_path(shared_root, raw_path, allow_root=True)
             except ValueError as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1046,7 +548,7 @@ def make_handler(state: ServerState):
             entries = []
             for item in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
                 stat = item.stat()
-                rel_path = item.relative_to(state.shared_root).as_posix()
+                rel_path = item.relative_to(shared_root).as_posix()
                 entries.append(
                     {
                         "name": item.name,
@@ -1065,9 +567,10 @@ def make_handler(state: ServerState):
             )
 
         def _handle_stat(self, query: dict[str, list[str]]) -> None:
+            shared_root = state.get_shared_root()
             try:
                 raw_path = self._query_value(query, "path", required=True) or ""
-                target = resolve_safe_path(state.shared_root, raw_path, allow_root=True)
+                target = resolve_safe_path(shared_root, raw_path, allow_root=True)
             except ValueError as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1093,9 +596,10 @@ def make_handler(state: ServerState):
             )
 
         def _handle_mkdir(self, query: dict[str, list[str]]) -> None:
+            shared_root = state.get_shared_root()
             try:
                 raw_path = self._query_value(query, "path", required=True) or ""
-                target = resolve_safe_path(state.shared_root, raw_path, allow_root=True)
+                target = resolve_safe_path(shared_root, raw_path, allow_root=True)
             except ValueError as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1112,9 +616,10 @@ def make_handler(state: ServerState):
             )
 
         def _handle_upload(self, query: dict[str, list[str]]) -> None:
+            shared_root = state.get_shared_root()
             try:
                 raw_path = self._query_value(query, "path", required=True) or ""
-                target = resolve_safe_path(state.shared_root, raw_path, allow_root=False)
+                target = resolve_safe_path(shared_root, raw_path, allow_root=False)
             except ValueError as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1173,9 +678,10 @@ def make_handler(state: ServerState):
             )
 
         def _handle_download(self, query: dict[str, list[str]]) -> None:
+            shared_root = state.get_shared_root()
             try:
                 raw_path = self._query_value(query, "path", required=True) or ""
-                target = resolve_safe_path(state.shared_root, raw_path, allow_root=False)
+                target = resolve_safe_path(shared_root, raw_path, allow_root=False)
             except ValueError as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1232,10 +738,31 @@ def make_handler(state: ServerState):
                 except (BrokenPipeError, ConnectionResetError):
                     return
 
+        def _handle_asset(self, path: str) -> None:
+            rel = path[len("/assets/") :].strip()
+            if not rel or "/" in rel or "\\" in rel or ".." in rel:
+                self._send_error(404, "Asset not found")
+                return
+            asset_file = ASSET_ROOT / rel
+            if not asset_file.exists() or not asset_file.is_file():
+                self._send_error(404, "Asset not found")
+                return
+            try:
+                payload = asset_file.read_bytes()
+            except OSError:
+                self._send_error(500, "Failed to read asset")
+                return
+            guessed = mimetypes.guess_type(asset_file.name)[0]
+            content_type = guessed or "application/octet-stream"
+            self._send_bytes(200, payload, content_type)
+
         def do_GET(self) -> None:
             path, query = self._parse_target()
             if path in ("/", "/index.html"):
                 self._send_html(200, WEB_UI_HTML)
+                return
+            if path.startswith("/assets/"):
+                self._handle_asset(path)
                 return
             if path == "/favicon.ico":
                 self.send_response(204)
@@ -1248,6 +775,12 @@ def make_handler(state: ServerState):
                 return
             if path == "/api/challenge":
                 self._handle_challenge()
+                return
+            if path == "/api/server-passphrase":
+                self._handle_server_passphrase()
+                return
+            if path == "/api/server-root":
+                self._handle_server_root()
                 return
             if not path.startswith("/api/"):
                 self._send_error(404, "Not found")
@@ -1273,10 +806,16 @@ def make_handler(state: ServerState):
                 return
             if not self._require_auth():
                 return
-            if path == "/api/upload":
+            if path == "/api/refresh":
+                self._handle_refresh()
+            elif path == "/api/upload":
                 self._handle_upload(query)
             elif path == "/api/mkdir":
                 self._handle_mkdir(query)
+            elif path == "/api/server-root":
+                self._handle_set_server_root()
+            elif path == "/api/server-root/pick":
+                self._handle_pick_server_root()
             else:
                 self._send_error(404, "Unknown endpoint")
 
@@ -1306,6 +845,7 @@ def parse_server(server: str) -> tuple[str, int]:
 
 
 class LanTransferClient:
+    # 命令行客户端：上传/下载/列表/建目录等操作。
     def __init__(self, server: str, password: str, timeout: float) -> None:
         self.host, self.port = parse_server(server)
         self.password = password.encode("utf-8")
@@ -1577,30 +1117,43 @@ class LanTransferClient:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="LAN file transfer tool with password auth and resumable transport."
+        description="LAN file transfer tool with web login, resumable transfer, and local-network speed."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     serve = subparsers.add_parser("serve", help="Run transfer server")
-    serve.add_argument("--bind", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    serve.add_argument(
+        "--bind",
+        default="auto",
+        help="Bind address (default: auto -> detected LAN IP)",
+    )
     serve.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port (default: 9000)")
     serve.add_argument(
         "--root",
         default="./shared",
         help="Shared directory path (default: ./shared)",
     )
-    serve.add_argument("--password", help="Server password")
+    serve.add_argument(
+        "--password",
+        help="Server passphrase (if omitted, one is auto-generated at startup)",
+    )
     serve.add_argument(
         "--token-ttl",
         type=int,
         default=DEFAULT_TOKEN_TTL,
-        help="Token ttl in seconds (default: 86400)",
+        help=f"Token ttl in seconds (default: {DEFAULT_TOKEN_TTL})",
     )
     serve.add_argument(
         "--challenge-ttl",
         type=int,
         default=DEFAULT_CHALLENGE_TTL,
         help="Challenge ttl in seconds (default: 60)",
+    )
+    serve.add_argument(
+        "--port-conflict",
+        choices=["ask", "kill", "abort"],
+        default="ask",
+        help="What to do when port is occupied: ask/kill/abort (default: ask)",
     )
 
     def add_client_common(p: argparse.ArgumentParser) -> None:
@@ -1666,7 +1219,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def get_password(cli_password: Optional[str], prompt: str) -> str:
+def generate_passphrase(length: int = 6) -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    while True:
+        candidate = "".join(secrets.choice(alphabet) for _ in range(length))
+        has_alpha = any(ch.isalpha() for ch in candidate)
+        has_digit = any(ch.isdigit() for ch in candidate)
+        if has_alpha and has_digit:
+            return candidate
+
+
+def resolve_server_password(cli_password: Optional[str]) -> tuple[str, bool]:
+    if cli_password:
+        return cli_password, False
+    env_password = os.getenv("LAN_TRANSFER_PASSWORD")
+    if env_password:
+        return env_password, False
+    return generate_passphrase(6), True
+
+
+def get_client_password(cli_password: Optional[str], prompt: str) -> str:
     if cli_password:
         return cli_password
     env_password = os.getenv("LAN_TRANSFER_PASSWORD")
@@ -1676,35 +1248,95 @@ def get_password(cli_password: Optional[str], prompt: str) -> str:
 
 
 def run_server(args: argparse.Namespace) -> int:
-    password = get_password(args.password, "Set server password: ")
+    password, generated = resolve_server_password(args.password)
+    bind_host = detect_lan_ip() if str(args.bind).lower() == "auto" else args.bind
     shared_root = Path(args.root).expanduser().resolve()
     shared_root.mkdir(parents=True, exist_ok=True)
     state = ServerState(
         shared_root=shared_root,
         password_key=password.encode("utf-8"),
+        passphrase=password,
         token_ttl=args.token_ttl,
         challenge_ttl=args.challenge_ttl,
     )
+    state.local_ips.add(str(bind_host).split("%")[0])
     handler = make_handler(state)
-    httpd = ThreadingHTTPServer((args.bind, args.port), handler)
+    try:
+        httpd = ThreadingHTTPServer((bind_host, args.port), handler)
+    except OSError as exc:
+        winerror = getattr(exc, "winerror", None)
+        errno = getattr(exc, "errno", None)
+        address_in_use = winerror == 10048 or errno in (48, 98)
+        retried = False
+        if address_in_use:
+            pids = find_listening_pids(args.port)
+            if pids:
+                action = args.port_conflict
+                should_kill = False
+                if action == "kill":
+                    should_kill = True
+                elif action == "ask":
+                    if sys.stdin.isatty():
+                        print(
+                            f"Port {args.port} is occupied by PID(s): "
+                            + ", ".join(str(pid) for pid in pids)
+                        )
+                        answer = (
+                            input("Kill these processes and retry? [y/N]: ")
+                            .strip()
+                            .lower()
+                        )
+                        should_kill = answer in {"y", "yes"}
+                    else:
+                        print(
+                            "Port is occupied and interactive prompt is unavailable. "
+                            "Use --port-conflict kill to auto-terminate.",
+                            file=sys.stderr,
+                        )
+                if should_kill:
+                    killed = kill_processes(pids)
+                    if killed:
+                        time.sleep(0.4)
+                        retried = True
+                        try:
+                            httpd = ThreadingHTTPServer((bind_host, args.port), handler)
+                        except OSError:
+                            pass
+        if not retried or "httpd" not in locals():
+            print(f"Failed to bind {bind_host}:{args.port}: {exc}", file=sys.stderr)
+            print(
+                "Port may already be used by an old process. "
+                f"Check with: netstat -ano | findstr :{args.port}",
+                file=sys.stderr,
+            )
+            return 1
     httpd.daemon_threads = True
     httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    detected_ip = detect_lan_ip()
+    access_host = detected_ip if bind_host in ("0.0.0.0", "::") else bind_host
+    open_url = f"http://{access_host}:{args.port}/"
     print(
-        f"Server started on {args.bind}:{args.port}\\n"
-        f"Shared directory: {shared_root}\\n"
+        f"Server started on {bind_host}:{args.port}\n"
+        "Open in browser:"
+        f"{open_url}\n"
+        f"PID: {os.getpid()}\n"
+        f"Shared directory: {shared_root}\n"
         "Press Ctrl+C to stop."
     )
+    if generated:
+        print(f"Generated passphrase: {password}")
+    print(f"Token lifetime: {state.token_ttl // 3600} hours")
     try:
         httpd.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
-        print("\\nShutting down...")
+        print("\nShutting down...")
     finally:
         httpd.server_close()
     return 0
 
 
 def create_client(args: argparse.Namespace) -> LanTransferClient:
-    password = get_password(args.password, "Enter server password: ")
+    password = get_client_password(args.password, "Enter server password: ")
     return LanTransferClient(args.server, password=password, timeout=args.timeout)
 
 
@@ -1780,6 +1412,18 @@ def run_client(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    if len(sys.argv) == 1:
+        default_args = argparse.Namespace(
+            command="serve",
+            bind="auto",
+            port=DEFAULT_PORT,
+            root="./shared",
+            password=None,
+            token_ttl=DEFAULT_TOKEN_TTL,
+            challenge_ttl=DEFAULT_CHALLENGE_TTL,
+            port_conflict="ask",
+        )
+        return run_server(default_args)
     parser = build_parser()
     args = parser.parse_args()
     try:

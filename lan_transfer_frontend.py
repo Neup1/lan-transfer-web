@@ -269,6 +269,151 @@ WEB_UI_HTML = """<!doctype html>
       display: grid;
       gap: 10px;
     }
+    .transfer-panel {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: #fff;
+      padding: 12px;
+      display: grid;
+      gap: 12px;
+    }
+    .transfer-panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .transfer-panel-head h2 {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.2;
+    }
+    .transfer-summary {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .transfer-list {
+      display: grid;
+      gap: 10px;
+    }
+    .transfer-empty {
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-md);
+      background: #fbfdff;
+      color: var(--muted);
+      text-align: center;
+      padding: 18px 14px;
+      font-size: 13px;
+    }
+    .transfer-item {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: #fbfdff;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .transfer-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .transfer-title {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+    .transfer-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .transfer-subtitle {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .transfer-status-badge {
+      flex: none;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      background: #fff;
+      color: var(--muted);
+    }
+    .transfer-status-badge.running {
+      border-color: #cfe1ff;
+      background: #edf4ff;
+      color: #2b67bf;
+    }
+    .transfer-status-badge.paused,
+    .transfer-status-badge.queued {
+      border-color: #d7dfeb;
+      background: #f6f9fd;
+      color: #607188;
+    }
+    .transfer-status-badge.completed {
+      border-color: #bfe5ce;
+      background: #eefbf3;
+      color: #21784b;
+    }
+    .transfer-status-badge.cancelled,
+    .transfer-status-badge.error {
+      border-color: #f1b9c3;
+      background: #fff2f4;
+      color: var(--danger);
+    }
+    .transfer-progress {
+      height: 8px;
+      border-radius: 999px;
+      background: #e6edf7;
+      overflow: hidden;
+    }
+    .transfer-progress-bar {
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #2f6fdf 0%, #79a7ff 100%);
+      transition: width 0.12s linear;
+    }
+    .transfer-meta-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .transfer-note {
+      min-width: 0;
+      font-size: 12px;
+      color: var(--muted);
+      word-break: break-word;
+    }
+    .transfer-stats {
+      flex: none;
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .transfer-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .transfer-actions button {
+      box-shadow: none;
+      padding: 8px 12px;
+      font-size: 12px;
+    }
     .browser-toolbar {
       border: 1px solid var(--border);
       border-radius: var(--radius-md);
@@ -468,6 +613,12 @@ WEB_UI_HTML = """<!doctype html>
       .path-actions { grid-template-columns: 1fr; }
       .path-action-buttons { width: 100%; }
       .path-action-buttons button { flex: 1; }
+      .transfer-top,
+      .transfer-meta-row,
+      .transfer-actions {
+        align-items: stretch;
+      }
+      .transfer-actions button { flex: 1; }
       .folder-mini {
         min-width: 0;
         width: 100%;
@@ -546,6 +697,16 @@ WEB_UI_HTML = """<!doctype html>
         <div id="dropZone" class="drop-zone">Drag files here to upload</div>
       </div>
 
+      <div class="transfer-panel">
+        <div class="transfer-panel-head">
+          <h2 id="transferTitle">Transfers</h2>
+          <div id="transferSummary" class="transfer-summary">No active tasks</div>
+        </div>
+        <div id="transferList" class="transfer-list">
+          <div class="transfer-empty">No transfers yet.</div>
+        </div>
+      </div>
+
       <div class="browser-toolbar">
         <div class="path-actions">
           <div id="breadcrumbs" class="path-chip"></div>
@@ -615,12 +776,19 @@ WEB_UI_HTML = """<!doctype html>
       // 首次访问默认中文。
       lang: localStorage.getItem(langKey) || "zh",
       refreshTimer: null,
-      refreshing: false
+      refreshing: false,
+      transfers: [],
+      transferSeq: 0,
+      maxActiveUploads: 1,
+      maxActiveDownloads: 1
     };
 
     const $ = (sel) => document.querySelector(sel);
     const statusEl = $("#status");
     const tokenMetaEl = $("#tokenMeta");
+    const transferTitle = $("#transferTitle");
+    const transferSummary = $("#transferSummary");
+    const transferList = $("#transferList");
     const serverTokenLabel = $("#serverTokenLabel");
     const serverTokenInput = $("#serverTokenInput");
     const serverTokenHint = $("#serverTokenHint");
@@ -665,6 +833,36 @@ WEB_UI_HTML = """<!doctype html>
     const i18n = {
       en: {
         headlineDesc: "Fast local network file transfer with password authentication.",
+        transfersTitle: "Transfers",
+        transfersEmpty: "No transfers yet.",
+        transfersSummaryEmpty: "No active tasks",
+        transfersSummary: "{running} running / {queued} queued / {paused} paused",
+        transferStatusQueued: "Queued",
+        transferStatusRunning: "Running",
+        transferStatusPaused: "Paused",
+        transferStatusCompleted: "Completed",
+        transferStatusCancelled: "Cancelled",
+        transferStatusError: "Failed",
+        transferPreparing: "Preparing transfer...",
+        transferWaitingUpload: "Waiting for another upload to finish.",
+        transferWaitingDownload: "Waiting for another download to finish.",
+        transferCompletedNote: "Transfer completed.",
+        transferCancelledNote: "Transfer cancelled.",
+        transferPausedNote: "Transfer paused.",
+        transferSkippedExisting: "File already complete, skipped.",
+        transfersQueued: "{count} transfer(s) added to the list.",
+        uploadTask: "Upload",
+        downloadTask: "Download",
+        pause: "Pause",
+        resume: "Resume",
+        cancel: "Cancel",
+        remove: "Remove",
+        downloadMemoryFallback: "This browser will keep the download in memory until it finishes.",
+        downloadPickerCancelled: "Save location selection was cancelled.",
+        browserStreamUnsupported: "This browser does not support streamed download control.",
+        downloadFailedHttp: "Download failed with HTTP {code}",
+        downloadCompletedStatus: "Downloaded: {name}",
+        uploadCompletedStatus: "Uploaded: {name}",
         tokenNotIssued: "Token: not issued",
         tokenExpiresAt: "Token expires at: {time}",
         serverTokenLabel: "Server Passphrase",
@@ -740,6 +938,36 @@ WEB_UI_HTML = """<!doctype html>
       },
       zh: {
         headlineDesc: "局域网高速文件传输，支持口令认证。",
+        transfersTitle: "传输列表",
+        transfersEmpty: "暂无传输任务。",
+        transfersSummaryEmpty: "当前没有活动任务",
+        transfersSummary: "运行中 {running} / 排队中 {queued} / 已暂停 {paused}",
+        transferStatusQueued: "排队中",
+        transferStatusRunning: "传输中",
+        transferStatusPaused: "已暂停",
+        transferStatusCompleted: "已完成",
+        transferStatusCancelled: "已取消",
+        transferStatusError: "失败",
+        transferPreparing: "正在准备传输...",
+        transferWaitingUpload: "等待前一个上传任务结束后开始。",
+        transferWaitingDownload: "等待前一个下载任务结束后开始。",
+        transferCompletedNote: "传输已完成。",
+        transferCancelledNote: "传输已取消。",
+        transferPausedNote: "传输已暂停。",
+        transferSkippedExisting: "文件已完整存在，已跳过。",
+        transfersQueued: "已加入 {count} 个传输任务。",
+        uploadTask: "上传",
+        downloadTask: "下载",
+        pause: "暂停",
+        resume: "继续",
+        cancel: "取消",
+        remove: "移除",
+        downloadMemoryFallback: "当前浏览器会先把下载内容保存在内存中，完成后再保存。",
+        downloadPickerCancelled: "已取消选择保存位置。",
+        browserStreamUnsupported: "当前浏览器不支持可控流式下载。",
+        downloadFailedHttp: "下载失败，HTTP 状态码：{code}",
+        downloadCompletedStatus: "下载完成：{name}",
+        uploadCompletedStatus: "上传完成：{name}",
         tokenNotIssued: "令牌：未签发",
         tokenExpiresAt: "令牌到期时间：{time}",
         serverTokenLabel: "服务器通行令牌",
@@ -998,6 +1226,7 @@ WEB_UI_HTML = """<!doctype html>
       updateServerRootUI();
       updateSelectedFileLabel();
       updateTokenMeta();
+      renderTransfers();
     }
 
     function updateSelectedFileLabel() {
@@ -1011,6 +1240,221 @@ WEB_UI_HTML = """<!doctype html>
         return;
       }
       filePickText.textContent = t("filesSelected", { count: files.length });
+    }
+
+    function nextTransferId() {
+      state.transferSeq += 1;
+      return "transfer-" + state.transferSeq;
+    }
+
+    function createTransferTask(data) {
+      const task = {
+        id: nextTransferId(),
+        kind: data.kind || "upload",
+        name: data.name || "",
+        remotePath: data.remotePath || "",
+        totalBytes: Number(data.totalBytes || 0),
+        transferredBytes: Number(data.transferredBytes || 0),
+        status: "queued",
+        noteKey: data.noteKey || "transferPreparing",
+        noteVars: data.noteVars || {},
+        errorText: "",
+        speed: 0,
+        allowResume: data.allowResume !== false,
+        file: data.file || null,
+        fileHandle: data.fileHandle || null,
+        storage: data.storage || "",
+        memoryChunks: Array.isArray(data.memoryChunks) ? data.memoryChunks : [],
+        objectUrl: "",
+        xhr: null,
+        controller: null,
+        abortReason: "",
+        writable: null,
+        startedAt: 0
+      };
+      state.transfers.unshift(task);
+      renderTransfers();
+      scheduleTransfers();
+      return task;
+    }
+
+    function getTransferById(id) {
+      return state.transfers.find((task) => task.id === id) || null;
+    }
+
+    function transferStatusKey(status) {
+      if (status === "running") return "transferStatusRunning";
+      if (status === "paused") return "transferStatusPaused";
+      if (status === "completed") return "transferStatusCompleted";
+      if (status === "cancelled") return "transferStatusCancelled";
+      if (status === "error") return "transferStatusError";
+      return "transferStatusQueued";
+    }
+
+    function transferStatusText(task) {
+      return t(transferStatusKey(task.status));
+    }
+
+    function transferKindText(task) {
+      return task.kind === "download" ? t("downloadTask") : t("uploadTask");
+    }
+
+    function transferNoteText(task) {
+      if (task.errorText) return task.errorText;
+      if (task.noteKey) return t(task.noteKey, task.noteVars || {});
+      return transferStatusText(task);
+    }
+
+    function transferPercent(task) {
+      if (!task.totalBytes) return 0;
+      return Math.max(0, Math.min(100, (Number(task.transferredBytes || 0) * 100) / task.totalBytes));
+    }
+
+    function runningTransferCount(kind) {
+      return state.transfers.filter((task) => task.kind === kind && task.status === "running").length;
+    }
+
+    function setTaskNote(task, noteKey = "", noteVars = {}, errorText = "") {
+      task.noteKey = noteKey;
+      task.noteVars = noteVars || {};
+      task.errorText = errorText || "";
+    }
+
+    function clearTaskRuntime(task) {
+      task.abortReason = "";
+      task.speed = 0;
+      task.startedAt = 0;
+      task.xhr = null;
+      task.controller = null;
+      task.writable = null;
+    }
+
+    function countChunkBytes(chunks) {
+      return (chunks || []).reduce((sum, chunk) => sum + Number(chunk && chunk.byteLength ? chunk.byteLength : 0), 0);
+    }
+
+    function renderTransfers() {
+      transferTitle.textContent = t("transfersTitle");
+      if (!state.transfers.length) {
+        transferSummary.textContent = t("transfersSummaryEmpty");
+        transferList.innerHTML = "";
+        const empty = document.createElement("div");
+        empty.className = "transfer-empty";
+        empty.textContent = t("transfersEmpty");
+        transferList.appendChild(empty);
+        return;
+      }
+
+      const running = state.transfers.filter((task) => task.status === "running").length;
+      const queued = state.transfers.filter((task) => task.status === "queued").length;
+      const paused = state.transfers.filter((task) => task.status === "paused").length;
+      transferSummary.textContent = t("transfersSummary", { running, queued, paused });
+
+      transferList.innerHTML = "";
+      for (const task of state.transfers) {
+        const item = document.createElement("div");
+        item.className = "transfer-item";
+
+        const top = document.createElement("div");
+        top.className = "transfer-top";
+
+        const title = document.createElement("div");
+        title.className = "transfer-title";
+
+        const name = document.createElement("div");
+        name.className = "transfer-name";
+        name.textContent = task.name || task.remotePath || transferKindText(task);
+        title.appendChild(name);
+
+        const subtitle = document.createElement("div");
+        subtitle.className = "transfer-subtitle";
+        subtitle.textContent = transferKindText(task) + " · " + (task.remotePath || task.name || "-");
+        title.appendChild(subtitle);
+        top.appendChild(title);
+
+        const badge = document.createElement("div");
+        badge.className = "transfer-status-badge " + task.status;
+        badge.textContent = transferStatusText(task);
+        top.appendChild(badge);
+        item.appendChild(top);
+
+        const progressWrap = document.createElement("div");
+        progressWrap.className = "transfer-progress";
+        const progressBar = document.createElement("div");
+        progressBar.className = "transfer-progress-bar";
+        progressBar.style.width = transferPercent(task).toFixed(2) + "%";
+        progressWrap.appendChild(progressBar);
+        item.appendChild(progressWrap);
+
+        const metaRow = document.createElement("div");
+        metaRow.className = "transfer-meta-row";
+
+        const note = document.createElement("div");
+        note.className = "transfer-note";
+        note.textContent = transferNoteText(task);
+        metaRow.appendChild(note);
+
+        const stats = document.createElement("div");
+        stats.className = "transfer-stats";
+        const bytesText = formatBytes(task.transferredBytes || 0) + " / " + formatBytes(task.totalBytes || 0);
+        if (task.status === "running" && task.speed > 0) {
+          stats.textContent = bytesText + " · " + formatBytes(task.speed) + "/s";
+        } else {
+          stats.textContent = bytesText;
+        }
+        metaRow.appendChild(stats);
+        item.appendChild(metaRow);
+
+        const actions = document.createElement("div");
+        actions.className = "transfer-actions";
+
+        if (task.status === "running") {
+          const pauseBtn = document.createElement("button");
+          pauseBtn.className = "ghost";
+          pauseBtn.type = "button";
+          pauseBtn.textContent = t("pause");
+          pauseBtn.addEventListener("click", () => pauseTransfer(task.id));
+          actions.appendChild(pauseBtn);
+
+          const cancelBtn = document.createElement("button");
+          cancelBtn.className = "ghost";
+          cancelBtn.type = "button";
+          cancelBtn.textContent = t("cancel");
+          cancelBtn.addEventListener("click", () => cancelTransfer(task.id));
+          actions.appendChild(cancelBtn);
+        } else if (task.status === "queued") {
+          const cancelBtn = document.createElement("button");
+          cancelBtn.className = "ghost";
+          cancelBtn.type = "button";
+          cancelBtn.textContent = t("cancel");
+          cancelBtn.addEventListener("click", () => cancelTransfer(task.id));
+          actions.appendChild(cancelBtn);
+        } else if (task.status === "paused" || task.status === "error") {
+          const resumeBtn = document.createElement("button");
+          resumeBtn.className = "soft";
+          resumeBtn.type = "button";
+          resumeBtn.textContent = t("resume");
+          resumeBtn.addEventListener("click", () => resumeTransfer(task.id));
+          actions.appendChild(resumeBtn);
+
+          const cancelBtn = document.createElement("button");
+          cancelBtn.className = "ghost";
+          cancelBtn.type = "button";
+          cancelBtn.textContent = t("cancel");
+          cancelBtn.addEventListener("click", () => cancelTransfer(task.id));
+          actions.appendChild(cancelBtn);
+        } else {
+          const removeBtn = document.createElement("button");
+          removeBtn.className = "ghost";
+          removeBtn.type = "button";
+          removeBtn.textContent = t("remove");
+          removeBtn.addEventListener("click", () => removeTransfer(task.id));
+          actions.appendChild(removeBtn);
+        }
+
+        item.appendChild(actions);
+        transferList.appendChild(item);
+      }
     }
 
     function setStatus(text, kind = "") {
@@ -1072,6 +1516,88 @@ WEB_UI_HTML = """<!doctype html>
       clearTable(t("signInToLoad"));
       setStatus(t("signedOut"));
       updateServerRootUI();
+    }
+
+    function scheduleTransfers() {
+      const uploadSlots = Math.max(1, Number(state.maxActiveUploads || 1));
+      const downloadSlots = Math.max(1, Number(state.maxActiveDownloads || 1));
+
+      let runningUploads = runningTransferCount("upload");
+      let runningDownloads = runningTransferCount("download");
+
+      for (const task of state.transfers) {
+        if (task.status !== "queued") continue;
+        if (task.kind === "upload") {
+          if (runningUploads >= uploadSlots) {
+            setTaskNote(task, "transferWaitingUpload");
+            continue;
+          }
+          runningUploads += 1;
+          startUploadTask(task);
+        } else {
+          if (runningDownloads >= downloadSlots) {
+            setTaskNote(task, "transferWaitingDownload");
+            continue;
+          }
+          runningDownloads += 1;
+          startDownloadTask(task);
+        }
+      }
+
+      renderTransfers();
+    }
+
+    async function safeRefreshDir() {
+      if (!state.token) return;
+      try {
+        await loadDir(state.path || "");
+      } catch (err) {
+      }
+    }
+
+    async function fetchRemoteFileSize(remotePath) {
+      const stat = await requestJson("/api/stat?path=" + encodeURIComponent(remotePath));
+      if (!stat.exists || stat.is_dir) return 0;
+      return Number(stat.size || 0);
+    }
+
+    async function syncUploadTaskProgress(task) {
+      try {
+        task.transferredBytes = await fetchRemoteFileSize(task.remotePath);
+      } catch (err) {
+      }
+      task.totalBytes = task.file ? task.file.size : task.totalBytes;
+    }
+
+    async function syncDownloadTaskProgress(task) {
+      if (task.fileHandle) {
+        try {
+          const file = await task.fileHandle.getFile();
+          task.transferredBytes = Number(file.size || 0);
+          return;
+        } catch (err) {
+        }
+      }
+      task.transferredBytes = countChunkBytes(task.memoryChunks);
+    }
+
+    async function finishTaskAbort(task, status, noteKey, syncProgress) {
+      clearTaskRuntime(task);
+      if (syncProgress) {
+        await syncProgress(task);
+      }
+      task.status = status;
+      setTaskNote(task, noteKey);
+      renderTransfers();
+      scheduleTransfers();
+    }
+
+    async function failTask(task, err) {
+      clearTaskRuntime(task);
+      task.status = "error";
+      setTaskNote(task, "", {}, String((err && err.message) || err || "Unknown error"));
+      renderTransfers();
+      scheduleTransfers();
     }
 
     function formatBytes(size) {
@@ -1314,14 +1840,10 @@ WEB_UI_HTML = """<!doctype html>
         setStatus(t("pleaseSignInFirst"), "error");
         return;
       }
-      const url = "/api/download?path=" + encodeURIComponent(remotePath) + "&token=" + encodeURIComponent(state.token);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = fileName || "";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setStatus(t("downloadStarted", { path: remotePath }), "ok");
+      queueDownload({
+        path: remotePath,
+        name: fileName || "download"
+      });
     }
 
     async function queryRemoteOffset(remotePath, fileSize, allowResume) {
@@ -1335,22 +1857,35 @@ WEB_UI_HTML = """<!doctype html>
       return 0;
     }
 
-    function uploadChunk(file, remotePath, offset, onProgress) {
+    function uploadTransferChunk(task, offset) {
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/api/upload?path=" + encodeURIComponent(remotePath), true);
+        task.xhr = xhr;
+        task.startedAt = Date.now();
+        xhr.open("POST", "/api/upload?path=" + encodeURIComponent(task.remotePath), true);
         xhr.setRequestHeader("Authorization", "Bearer " + state.token);
         xhr.setRequestHeader("X-Offset", String(offset));
         xhr.setRequestHeader("Content-Type", "application/octet-stream");
 
         xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            onProgress(offset + event.loaded, file.size);
-          }
+          if (!event.lengthComputable) return;
+          const elapsed = Math.max((Date.now() - task.startedAt) / 1000, 0.001);
+          task.transferredBytes = offset + event.loaded;
+          task.totalBytes = task.file ? task.file.size : task.totalBytes;
+          task.speed = event.loaded / elapsed;
+          renderTransfers();
         };
 
-        xhr.onerror = () => reject(new Error(t("networkUploadError")));
+        xhr.onerror = () => {
+          task.xhr = null;
+          reject(new Error(t("networkUploadError")));
+        };
+        xhr.onabort = () => {
+          task.xhr = null;
+          reject(new Error(task.abortReason === "paused" ? "__PAUSED__" : "__CANCELLED__"));
+        };
         xhr.onload = () => {
+          task.xhr = null;
           if (xhr.status === 401) {
             setToken("");
             reject(new Error(t("authExpired")));
@@ -1366,13 +1901,205 @@ WEB_UI_HTML = """<!doctype html>
             reject(new Error(msg));
             return;
           }
-          onProgress(file.size, file.size);
+          if (task.file) task.transferredBytes = task.file.size;
           resolve();
         };
 
-        const payload = offset > 0 ? file.slice(offset) : file;
+        const payload = offset > 0 ? task.file.slice(offset) : task.file;
         xhr.send(payload);
       });
+    }
+
+    async function startUploadTask(task) {
+      if (!task.file || task.status === "running") return;
+      if (!state.token) {
+        await failTask(task, new Error(t("pleaseSignInFirst")));
+        return;
+      }
+      task.status = "running";
+      task.errorText = "";
+      task.abortReason = "";
+      setTaskNote(task, "transferPreparing");
+      renderTransfers();
+      try {
+        const offset = await queryRemoteOffset(task.remotePath, task.file.size, task.allowResume);
+        task.totalBytes = task.file.size;
+        task.transferredBytes = offset;
+        if (offset >= task.file.size) {
+          clearTaskRuntime(task);
+          task.status = "completed";
+          setTaskNote(task, "transferSkippedExisting");
+          renderTransfers();
+          scheduleTransfers();
+          await safeRefreshDir();
+          return;
+        }
+        await uploadTransferChunk(task, offset);
+        clearTaskRuntime(task);
+        task.status = "completed";
+        task.transferredBytes = task.file.size;
+        setTaskNote(task, "transferCompletedNote");
+        renderTransfers();
+        scheduleTransfers();
+        setStatus(t("uploadCompletedStatus", { name: task.name }), "ok");
+        await safeRefreshDir();
+      } catch (err) {
+        if (err && err.message === "__PAUSED__") {
+          await finishTaskAbort(task, "paused", "transferPausedNote", syncUploadTaskProgress);
+          return;
+        }
+        if (err && err.message === "__CANCELLED__") {
+          await finishTaskAbort(task, "cancelled", "transferCancelledNote", syncUploadTaskProgress);
+          return;
+        }
+        await failTask(task, err);
+      }
+    }
+
+    function finalizeMemoryDownload(task) {
+      if (task.objectUrl) {
+        URL.revokeObjectURL(task.objectUrl);
+        task.objectUrl = "";
+      }
+      const blob = new Blob(task.memoryChunks || [], { type: "application/octet-stream" });
+      task.objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = task.objectUrl;
+      link.download = task.name || "download";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      task.memoryChunks = [];
+    }
+
+    async function startDownloadTask(task) {
+      if (task.status === "running") return;
+      if (!state.token) {
+        await failTask(task, new Error(t("pleaseSignInFirst")));
+        return;
+      }
+      task.status = "running";
+      task.errorText = "";
+      task.abortReason = "";
+      setTaskNote(task, "transferPreparing");
+      renderTransfers();
+
+      let writable = null;
+      try {
+        let offset = 0;
+        if (task.fileHandle) {
+          const existing = await task.fileHandle.getFile();
+          offset = task.allowResume ? Number(existing.size || 0) : 0;
+        } else {
+          offset = task.allowResume ? countChunkBytes(task.memoryChunks) : 0;
+        }
+        task.transferredBytes = offset;
+
+        task.controller = new AbortController();
+        task.startedAt = Date.now();
+        const response = await fetch(
+          "/api/download?path=" + encodeURIComponent(task.remotePath) + "&offset=" + offset,
+          {
+            headers: {
+              "Authorization": "Bearer " + state.token,
+              "Accept": "application/octet-stream"
+            },
+            signal: task.controller.signal
+          }
+        );
+        if (response.status === 401) {
+          setToken("");
+          throw new Error(t("authExpired"));
+        }
+        if (!response.ok) {
+          let msg = t("downloadFailedHttp", { code: response.status });
+          const payload = await response.json().catch(() => ({}));
+          if (payload && payload.error) msg = payload.error;
+          throw new Error(msg);
+        }
+
+        const totalSize = Number(response.headers.get("X-File-Size") || task.totalBytes || 0);
+        task.totalBytes = totalSize;
+        if (offset >= totalSize && totalSize > 0) {
+          clearTaskRuntime(task);
+          task.status = "completed";
+          setTaskNote(task, "transferSkippedExisting");
+          renderTransfers();
+          scheduleTransfers();
+          return;
+        }
+
+        const reader = response.body && response.body.getReader ? response.body.getReader() : null;
+        if (!reader) throw new Error(t("browserStreamUnsupported"));
+
+        if (task.fileHandle) {
+          writable = offset > 0
+            ? await task.fileHandle.createWritable({ keepExistingData: true })
+            : await task.fileHandle.createWritable();
+          task.writable = writable;
+        } else if (!Array.isArray(task.memoryChunks)) {
+          task.memoryChunks = [];
+        }
+
+        let moved = 0;
+        while (true) {
+          const result = await reader.read();
+          if (result.done) break;
+          const chunk = result.value;
+          if (!chunk || !chunk.byteLength) continue;
+          if (writable) {
+            await writable.write({ type: "write", position: offset + moved, data: chunk });
+          } else {
+            task.memoryChunks.push(chunk.slice ? chunk.slice(0) : chunk);
+          }
+          moved += chunk.byteLength;
+          const elapsed = Math.max((Date.now() - task.startedAt) / 1000, 0.001);
+          task.transferredBytes = offset + moved;
+          task.speed = moved / elapsed;
+          renderTransfers();
+        }
+
+        if (writable) {
+          await writable.close();
+          task.writable = null;
+        }
+
+        clearTaskRuntime(task);
+        task.status = "completed";
+        task.transferredBytes = totalSize || task.transferredBytes;
+        setTaskNote(task, "transferCompletedNote");
+        if (!task.fileHandle) {
+          finalizeMemoryDownload(task);
+        }
+        renderTransfers();
+        scheduleTransfers();
+        setStatus(t("downloadCompletedStatus", { name: task.name }), "ok");
+      } catch (err) {
+        if (writable) {
+          try {
+            await writable.close();
+          } catch (closeErr) {
+          }
+          task.writable = null;
+        }
+        if (err && err.message === "__CANCELLED__") {
+          await finishTaskAbort(task, "cancelled", "transferCancelledNote", syncDownloadTaskProgress);
+          return;
+        }
+        if (task.abortReason === "cancelled") {
+          await finishTaskAbort(task, "cancelled", "transferCancelledNote", syncDownloadTaskProgress);
+          return;
+        }
+        if (err && (err.name === "AbortError" || err.message === "__PAUSED__")) {
+          await finishTaskAbort(task, "paused", "transferPausedNote", syncDownloadTaskProgress);
+          return;
+        }
+        if (task.abortReason === "paused") {
+          await finishTaskAbort(task, "paused", "transferPausedNote", syncDownloadTaskProgress);
+          return;
+        }
+        await failTask(task, err);
+      }
     }
 
     async function uploadFiles(files) {
@@ -1385,46 +2112,123 @@ WEB_UI_HTML = """<!doctype html>
         setStatus(t("pleaseSignInFirst"), "error");
         return;
       }
-      uploadBtn.disabled = true;
-      let done = 0;
-      try {
-        for (const file of list) {
-          const remotePath = joinPath(state.path, file.name);
-          const allowResume = Boolean(resumeCheckbox.checked);
-          const offset = await queryRemoteOffset(remotePath, file.size, allowResume);
-          if (offset === file.size) {
-            done += 1;
-            setStatus(
-              t("skippedExisting", { name: file.name, done: done, total: list.length }),
-              "ok"
-            );
-            continue;
-          }
-          await uploadChunk(file, remotePath, offset, (current, total) => {
-            const pct = total > 0 ? ((current * 100) / total).toFixed(2) : "100.00";
-            setStatus(
-              t("uploading", {
-                name: file.name,
-                pct: pct,
-                done: done,
-                total: list.length
-              })
-            );
+      for (const file of list) {
+        createTransferTask({
+          kind: "upload",
+          name: file.name,
+          remotePath: joinPath(state.path, file.name),
+          totalBytes: file.size,
+          allowResume: Boolean(resumeCheckbox.checked),
+          file: file,
+          noteKey: "transferPreparing"
+        });
+      }
+      uploadInput.value = "";
+      updateSelectedFileLabel();
+      setStatus(t("transfersQueued", { count: list.length }), "ok");
+    }
+
+    async function prepareDownloadTarget(fileName) {
+      if (typeof window.showSaveFilePicker === "function") {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: fileName || "download"
           });
-          done += 1;
-          setStatus(
-            t("uploaded", { name: file.name, done: done, total: list.length }),
-            "ok"
-          );
+          return { fileHandle: handle, storage: "file-system" };
+        } catch (err) {
+          if (err && err.name === "AbortError") return null;
+          throw err;
         }
-        uploadInput.value = "";
-        updateSelectedFileLabel();
-        await loadDir(state.path);
+      }
+      return { fileHandle: null, storage: "memory" };
+    }
+
+    async function queueDownload(item) {
+      if (!state.token) {
+        setStatus(t("pleaseSignInFirst"), "error");
+        return;
+      }
+      try {
+        const target = await prepareDownloadTarget(item.name || "download");
+        if (!target) {
+          setStatus(t("downloadPickerCancelled"));
+          return;
+        }
+        createTransferTask({
+          kind: "download",
+          name: item.name || "download",
+          remotePath: item.path || "",
+          totalBytes: Number(item.size || 0),
+          allowResume: true,
+          fileHandle: target.fileHandle,
+          storage: target.storage,
+          noteKey: target.storage === "memory" ? "downloadMemoryFallback" : "transferPreparing"
+        });
+        if (target.storage === "memory") {
+          setStatus(t("downloadMemoryFallback"), "ok");
+        } else {
+          setStatus(t("downloadStarted", { path: item.path || item.name || "" }), "ok");
+        }
       } catch (err) {
         setStatus(String(err.message || err), "error");
-      } finally {
-        uploadBtn.disabled = false;
       }
+    }
+
+    function pauseTransfer(id) {
+      const task = getTransferById(id);
+      if (!task || task.status !== "running") return;
+      task.abortReason = "paused";
+      if (task.xhr) {
+        task.xhr.abort();
+        return;
+      }
+      if (task.controller) {
+        task.controller.abort();
+      }
+    }
+
+    function cancelTransfer(id) {
+      const task = getTransferById(id);
+      if (!task) return;
+      if (task.status === "running") {
+        task.abortReason = "cancelled";
+        if (task.xhr) {
+          task.xhr.abort();
+          return;
+        }
+        if (task.controller) {
+          task.controller.abort();
+          return;
+        }
+      }
+      if (task.status === "queued" || task.status === "paused" || task.status === "error") {
+        clearTaskRuntime(task);
+        task.status = "cancelled";
+        setTaskNote(task, "transferCancelledNote");
+        renderTransfers();
+        scheduleTransfers();
+      }
+    }
+
+    function resumeTransfer(id) {
+      const task = getTransferById(id);
+      if (!task || (task.status !== "paused" && task.status !== "error")) return;
+      clearTaskRuntime(task);
+      task.status = "queued";
+      setTaskNote(task, task.kind === "download" ? "transferWaitingDownload" : "transferWaitingUpload");
+      renderTransfers();
+      scheduleTransfers();
+    }
+
+    function removeTransfer(id) {
+      const index = state.transfers.findIndex((task) => task.id === id);
+      if (index < 0) return;
+      const [task] = state.transfers.splice(index, 1);
+      if (task.objectUrl) {
+        URL.revokeObjectURL(task.objectUrl);
+      }
+      renderTransfers();
+      scheduleTransfers();
     }
 
     async function createFolder() {
